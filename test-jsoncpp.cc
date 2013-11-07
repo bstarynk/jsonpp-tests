@@ -14,8 +14,8 @@
 #include <cassert>
 #include <climits>
 #include <argp.h>
+#include <time.h>
 
-#warning this code is very incomplete
 
 std::ranlux24* my_randomgen;
 
@@ -27,9 +27,29 @@ my_random () {
 static const struct argp_option my_options[] =
 {
   {
-    .name = "random-seed",.key = 'r',.arg = "<seed-number>",
+    .name = "random-seed",.key = 'R',.arg = "<seed-number>",
     .flags = 0,
     .doc = "seed for pseudo-random number generator, default is random"
+  },
+  {
+    .name = "width",.key = 'W',.arg = "<width>",
+    .flags = 0,
+    .doc = "threshold for emission of random JSON"
+  },
+  {
+    .name = "size",.key = 's',.arg = "<size>",
+    .flags = 0,
+    .doc = "size, i.e. number of generated JSON internal components"
+  },
+  {
+    .name = "output",.key = 'o',.arg = "<output-file>",
+    .flags = 0,
+    .doc = "output file, or - for stdout"
+  },
+  {
+    .name = "input",.key = 'i',.arg = "<input-file>",
+    .flags = 0,
+    .doc = "input file, or - for stdin"
   },
   {
     .name = 0,.key = 0,.arg = 0,
@@ -51,11 +71,21 @@ static const struct  argp my_argp =
 };
 
 
-Json::Value 
+class Myargs {
+public:
+  unsigned my_width;
+  unsigned my_size;
+  std::string my_input;
+  std::string my_output;
+  Myargs() : my_width(2), my_size(100), my_input(), my_output() {};
+  ~Myargs() {};
+};
+
+Json::Value
 my_random_json(unsigned sz, unsigned width)
 {
-  assert (sz < MAX_INT);
-  assert (width < MAX_SHORT && width >= 2);
+  assert (sz < INT_MAX);
+  assert (width < SHRT_MAX && width >= 2);
   static const char* atstrings[] = {
     "one", "two", "three", "four", "five", "six", "seven",
     "eight", "nine", "ten", "blue", "green", "yellow", "red",
@@ -96,7 +126,7 @@ my_random_json(unsigned sz, unsigned width)
       composite = true;
       break;
     case 4:
-      if (my_random() % 2) 
+      if (my_random() % 2)
         jv = (bool) (my_random() % 2);
       break;
     }
@@ -118,31 +148,121 @@ my_random_json(unsigned sz, unsigned width)
         = jcont;
     };
     if (composite) {
-	   auto ix = my_random() % tablen;
-	   if (!jtab[ix] || my_random() % 3 == 0) 
-	     jtab[ix] = jv;
+      auto ix = my_random() % width;
+      if (!jvect[ix] || my_random() % 3 == 0)
+        jvect[ix] = jv;
     }
     if (my_random() % 7 == 0)
-       jtab[my_random () % tablen] = nullptr;
+      jvect[my_random () % width] = nullptr;
   }
   return jroot;
 }
 
-void testwrite(std::string filename, unsigned sz)
+double my_time(clockid_t id)
 {
-
+  double r=0.0;
+  struct timespec ts = {0,0};
+  if (!clock_gettime(id, &ts)) {
+    r = (double) ts.tv_sec + 1.0e-9 * ts.tv_nsec;
+    return r;
+  }
+  else return 0.0;
 }
 
 int main(int argc, char**argv)
 {
   static std::random_device _random_dev_;
+  Myargs args;
+  my_randomgen = new std::ranlux24(_random_dev_());
+  argp_parse(&my_argp, argc, argv, 0, nullptr, &args);
+  Json::Value jroot;
+  if (args.my_size>0 && args.my_width>0) {
+    fprintf(stderr, "computing random Json of size %d and width %d\n",
+            (int)args.my_size, (int)args.my_width);
+    double startreal = my_time(CLOCK_MONOTONIC);
+    double startcpu = my_time(CLOCK_PROCESS_CPUTIME_ID);
+    jroot = my_random_json(args.my_size, args.my_width);
+    double endreal = my_time(CLOCK_MONOTONIC);
+    double endcpu = my_time(CLOCK_PROCESS_CPUTIME_ID);
+    fprintf(stderr, "computed random Json (size %d) in %.4f real %.4f cpu sec\n",
+            args.my_size, endreal - startreal, endcpu - startcpu);
+  }
+  else if (!args.my_input.empty()) {
+    Json::Reader rd;
+    double startreal = my_time(CLOCK_MONOTONIC);
+    double startcpu = my_time(CLOCK_PROCESS_CPUTIME_ID);
+    if (args.my_input == "-") {
+      fprintf(stderr, "reading from standard input...\n");
+      if (!rd.parse(std::cin, jroot, false))
+        fprintf(stderr, "failed to read from stdin... %s\n",
+                rd.getFormattedErrorMessages().c_str());
+    }
+    else {
+      std::ifstream inp(args.my_input);
+      fprintf(stderr, "reading from file %s...\n",
+              args.my_input.c_str());
+      if (!rd.parse(inp, jroot, false))
+        fprintf(stderr, "failed to read from file %s... %s\n",
+                args.my_input.c_str(),
+                rd.getFormattedErrorMessages().c_str());
+    };
+    double endreal = my_time(CLOCK_MONOTONIC);
+    double endcpu = my_time(CLOCK_PROCESS_CPUTIME_ID);
+    fprintf(stderr, "read input in %.4f real %.4f cpu sec\n",
+            endreal - startreal, endcpu - startcpu);
+  }
+  if (!args.my_output.empty()) {
+    Json::StyledStreamWriter wr(" ");
+    double startreal = my_time(CLOCK_MONOTONIC);
+    double startcpu = my_time(CLOCK_PROCESS_CPUTIME_ID);
+    if (args.my_output == "-") {
+      fprintf(stderr, "writing to standard output...\n");
+      wr.write(std::cout, jroot);
+      std::cout << std::endl << std::flush;
+    } else {
+      fprintf(stderr, "writing to file %s...\n", args.my_output.c_str());
+      std::ofstream out(args.my_output);
+      wr.write(out, jroot);
+      out << std::endl << std::flush;
+    }
+    double endreal = my_time(CLOCK_MONOTONIC);
+    double endcpu = my_time(CLOCK_PROCESS_CPUTIME_ID);
+    fprintf(stderr, "wrote output in %.4f real %.4f cpu sec\n",
+            endreal - startreal, endcpu - startcpu);
+
+  }
+
 }
+
 
 error_t
 my_parse_options(int key, char* arg, struct argp_state*state)
 {
+  Myargs* myargs = (Myargs*)state->input;
   switch(key) {
-  case 'R':
+  case 'R': // random seed
+    if (arg) {
+      unsigned s = atoi(arg);
+      fprintf(stderr, "seeding with %ud\n", s);
+      delete my_randomgen;
+      my_randomgen = new std::ranlux24(s);
+    }
+    break;
+  case 'W': // width
+    if (arg)
+      myargs->my_width = atoi(arg);
+    break;
+  case 's': // size
+    if (arg)
+      myargs->my_size = atoi(arg);
+    break;
+  case 'i': // input
+    if (arg)
+      myargs->my_input = arg;
+    break;
+  case 'o': // output
+    if (arg)
+      myargs->my_output = arg;
     break;
   }
   return 0;
