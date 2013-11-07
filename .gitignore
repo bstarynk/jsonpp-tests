@@ -1,13 +1,12 @@
 # Compiled Object files
-*.slo
-*.lo
 *.o
 
 # Compiled Dynamic libraries
 *.so
-*.dylib
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
+# Backup and pre-indentation
+*~
+*.orig
+
+## binaries
+test-jsoncpp
