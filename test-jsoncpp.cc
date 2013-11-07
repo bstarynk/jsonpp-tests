@@ -15,6 +15,7 @@
 #include <climits>
 #include <argp.h>
 #include <time.h>
+#include <string.h>
 
 
 std::ranlux24* my_randomgen;
@@ -23,6 +24,12 @@ static inline unsigned
 my_random () {
   return ((*my_randomgen)() % (UINT_MAX/2));
 }
+
+bool my_debug = false;
+
+#define DEBUG_AT(Fil,Lin,Out) do {if(my_debug) { std::clog << Fil \
+	<< ":" << Lin << " " << Out << std::endl; }}while(0)
+#define DEBUG(Out) DEBUG_AT(__FILE__,__LINE__,Out)
 
 static const struct argp_option my_options[] =
 {
@@ -50,6 +57,11 @@ static const struct argp_option my_options[] =
     .name = "input",.key = 'i',.arg = "<input-file>",
     .flags = 0,
     .doc = "input file, or - for stdin"
+  },
+  {
+    .name = "debug",.key = 'D',.arg = nullptr,
+    .flags = 0,
+    .doc = "debugging"
   },
   {
     .name = 0,.key = 0,.arg = 0,
@@ -89,7 +101,7 @@ my_random_json(unsigned sz, unsigned width)
   static const char* atstrings[] = {
     "one", "two", "three", "four", "five", "six", "seven",
     "eight", "nine", "ten", "blue", "green", "yellow", "red",
-    "pink", "black"
+    "pink", "black", "sad", "happy", "big", "tiny"
   };
   Json::Value jroot(Json::objectValue);
   std::vector<Json::Value> jvect;
@@ -98,13 +110,15 @@ my_random_json(unsigned sz, unsigned width)
   /// build a random jroot JSON object
   jroot["build"] = __DATE__;
   jroot["size"] = sz;
+  jroot["random"] = my_random() % 100000;
   while (sz-- > 0) {
-    unsigned r = my_random();
+    unsigned r = my_random() % 7;
     Json::Value jv;
     bool composite = false;
-    switch (r % 5) {
+    DEBUG("sz=" << sz << " r=" << r);
+    switch (r) {
     case 0:
-      jv = (int)my_random() % 10000;
+      jv = Json::Value((int)my_random() % 10000);
       break;
     case 1:
     {
@@ -113,24 +127,35 @@ my_random_json(unsigned sz, unsigned width)
       buf[1] = 'a' + (my_random() % 26);
       if (my_random() % 3)
         buf[2] = '0' + (my_random() % 10);
-      jv = buf;
+      jv = Json::Value(buf);
     }
     break;
     case 2:
-      jv = Json::Value(Json::objectValue);
-      jv["num"] = - (sz+1);
-      composite = true;
-      break;
     case 3:
-      jv = Json::Value(Json::arrayValue);
+      jv = Json::Value(Json::objectValue);
+      jv["num"] = Json::Value (Json::Int64(-((long)sz+1)));
       composite = true;
       break;
     case 4:
+    case 5:
+    {
+      char buf [32];
+      memset (buf, 0, sizeof(buf));
+      snprintf(buf, sizeof(buf), "_%d_", sz);
+      jv = Json::Value(Json::arrayValue);
+      jv.append(Json::Value(buf));
+      composite = true;
+    }
+    break;
+    case 6:
       if (my_random() % 2)
-        jv = (bool) (my_random() % 2);
+        jv = Json::Value((bool) (my_random() % 2));
       break;
     }
-    Json::Value &jcont = jvect[(my_random())%width];
+    DEBUG("jv=" << jv);
+    unsigned rix = (my_random())%width;
+    Json::Value &jcont = jvect[rix];
+    DEBUG("rix=" << rix << " old jcont=" << jcont);
     if (jcont.isArray())
       jcont.append(jv);
     else if (jcont.isObject())
@@ -142,18 +167,23 @@ my_random_json(unsigned sz, unsigned width)
                (int) my_random() % 100);
       jcont[atbuf] = jv;
     }
-    else {
-      jroot[atstrings[my_random()
-                      % (sizeof(atstrings)/sizeof(atstrings[0]))]]
-        = jcont;
+    else if (jcont.isNull()) {
+      std::string ats = atstrings[my_random()
+                                  % (sizeof(atstrings)/sizeof(atstrings[0]))];
+      if (!jroot.isMember(ats))
+        jroot[ats] = jv;
+      DEBUG("ats=" << ats << " jv=" << jv);
     };
     if (composite) {
-      auto ix = my_random() % width;
-      if (!jvect[ix] || my_random() % 3 == 0)
-        jvect[ix] = jv;
+      std::string atr = atstrings[my_random()
+                                  % (sizeof(atstrings)/sizeof(atstrings[0]))];
+      if (!jroot.isMember(atr))
+        jroot[atr] = jv;
+      else if (jvect[rix].isNull() || my_random() % (4*width/3+1) == 0)
+        jvect[rix] = jv;
     }
-    if (my_random() % 7 == 0)
-      jvect[my_random () % width] = nullptr;
+    if (my_random() % (2*width+1) == 0)
+      jvect[my_random () % width] = Json::Value::null;
   }
   return jroot;
 }
@@ -240,6 +270,11 @@ my_parse_options(int key, char* arg, struct argp_state*state)
 {
   Myargs* myargs = (Myargs*)state->input;
   switch(key) {
+  case 'D':
+    my_debug = true;
+    fprintf(stderr, "Debugging output...\n");
+    fflush(NULL);
+    break;
   case 'R': // random seed
     if (arg) {
       unsigned s = atoi(arg);
