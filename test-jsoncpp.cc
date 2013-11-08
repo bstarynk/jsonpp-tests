@@ -203,6 +203,7 @@ public:
 Json::Value
 my_random_json(unsigned sz, unsigned width)
 {
+#error we should use pointers in this function .. ie new Json::Value everywhere....
   assert(my_randomgen != nullptr);
   assert (sz < INT_MAX);
   assert (width < SHRT_MAX && width >= 2);
