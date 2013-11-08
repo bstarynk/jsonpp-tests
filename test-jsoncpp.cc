@@ -118,20 +118,87 @@ my_random_attr(unsigned sz)
   }
 }
 
-typedef std::function<bool(const Json::Value&)> action_t;
+// an action may change a container value and return true, or do nothing and return false
+typedef std::function<bool(Json::Value&jcontainer, const Json::Value&jcomponent)> action_t;
 
-bool
-do_random_action(std::vector<action_t>& vectact, const Json::Value&jv)
-{
-  unsigned width = vectact.size();
-  for (unsigned cnt = width/4 + (my_random() % (width/2+1));
-       cnt > 0;
-       cnt--)
-  { auto f = vectact[my_random() % width];
-    if (f(jv)) return true;
+class ToDo {
+  static unsigned td_counter_;
+  unsigned td_serial;
+  Json::Value* td_cont;
+  action_t td_action;
+  friend class SetDo;
+  ToDo(unsigned serial, Json::Value* cont, action_t act) :
+    td_serial(serial), td_cont(cont), td_action(act) {};
+public:
+  ToDo (Json::Value* cont, action_t act) :
+    td_serial(++td_counter_), td_cont(cont), td_action(act) {};
+  ~ToDo () {
+    td_serial=0;
+    td_cont= nullptr;
+  };
+  ToDo (const ToDo&) = default;
+  bool operator < (const ToDo &r) const
+  {
+    return td_serial < r.td_serial;
+  };
+  bool do_it(const Json::Value&jcomp) {
+    if (td_cont) {
+      bool done= td_action(*td_cont, jcomp);
+      td_cont = nullptr;
+      return done;
+    } else return false;
   }
-  return false;
-}
+  unsigned serial() const {
+    return td_serial;
+  };
+}; // end class ToDo
+
+unsigned ToDo::td_counter_;
+
+class SetDo {
+  std::map<unsigned,ToDo> ts_map;
+public:
+  size_t size() const {
+    return ts_map.size();
+  };
+  bool empty() const {
+    return ts_map.empty();
+  };
+  bool has(unsigned ser) const {
+    return ts_map.find(ser) != ts_map.end();
+  };
+  unsigned add_todo(Json::Value* val, action_t act)
+  {
+    unsigned ser = 1+my_random() % (size()+3);
+    if (!has(ser)) {
+      ToDo td(ser,val,act);
+      ts_map.insert({ser,td});
+      return ser;
+    } else {
+      ToDo td(val,act);
+      unsigned serial = td.serial();
+      ts_map.insert({serial,td});
+      return serial;
+    };
+  };
+  unsigned add_todo(ToDo td) {
+    unsigned serial = td.serial();
+    ts_map.insert({serial,td});
+    return serial;
+  };
+  bool do_random(const Json::Value& v)
+  {
+    if (empty()) return false;
+    unsigned lastser = ts_map.rbegin()->second.serial();
+    assert (lastser>0);
+    unsigned randser = my_random() % lastser;
+    auto it = ts_map.lower_bound(randser);
+    if (it == ts_map.end()) return false;
+    ToDo td = it->second;
+    ts_map.erase(it);
+    return td.do_it(v);
+  }
+}; // end class SetDo
 
 Json::Value
 my_random_json(unsigned sz, unsigned width)
@@ -140,39 +207,41 @@ my_random_json(unsigned sz, unsigned width)
   assert (sz < INT_MAX);
   assert (width < SHRT_MAX && width >= 2);
   Json::Value jroot(Json::objectValue);
-  // an action may change a value and return true, or do nothing and return false
-#warning we should also keep the pointer on which we are doing the action...
-  std::vector<action_t> actionvect;
-  actionvect.reserve(width);
+  SetDo tds;
   /// build a random jroot JSON object
   jroot["@build"] = __DATE__"-" __TIME__;
   jroot["@size"] = sz;
   jroot["@width"] = width;
   jroot["@random"] = my_random() % 100000;
-  // initialize the action vector to fill the root
-  for (unsigned cnt=0; cnt<width; cnt++) {
+  // initialize the todo set to fill the root
+  for (unsigned cnt=0; cnt<=width; cnt++) {
     auto at = my_random_attr((5*width/4+1)|7);
     jroot[at] = Json::Value::null;
-    actionvect.push_back([=,&jroot](const Json::Value& jv)
-    { if (jroot[at].isNull())
+    tds.add_todo(&jroot,[=](Json::Value&job, const Json::Value&jcomp)
+    { if (job[at].isNull())
       {
-        jroot[at]=jv;
+        job[at]=jcomp;
         return true;
       }
       else return false;
     });
   }
   while (sz > 0) {
+    if (tds.empty()) {
+      fprintf(stderr, "prematurely empty todo set, with %u remaining\n", sz);
+      break;
+    }
     unsigned r = my_random() % 9;
-    Json::Value jv;
     DEBUG("sz=" << sz << " r=" << r);
     switch (r) {
     case 0: // random number
-      jv = Json::Value((int)my_random() % (10000+5*width));
-      DEBUG("number jv=" << jv);
-      if (do_random_action(actionvect,jv))
+    {
+      Json::Value jint((int)my_random() % (10000+5*width));
+      DEBUG("number jint=" << jint);
+      if (tds.do_random(jint))
         sz--;
-      break;
+    }
+    break;
     case 1: // random small string
     {
       char buf[4] = {0,0,0,0};
@@ -180,9 +249,9 @@ my_random_json(unsigned sz, unsigned width)
       buf[1] = 'a' + (my_random() % 26);
       if (my_random() % 3)
         buf[2] = '0' + (my_random() % 10);
-      jv = Json::Value(buf);
-      DEBUG("string jv=" << jv);
-      if (do_random_action(actionvect,jv))
+      Json::Value jnewstr(buf);
+      DEBUG("string jnewstr=" << jnewstr);
+      if (tds.do_random(jnewstr))
         sz--;
     }
     break;
@@ -192,9 +261,9 @@ my_random_json(unsigned sz, unsigned width)
       memset (nbuf, 0, sizeof(nbuf));
       snprintf (nbuf, sizeof(nbuf), "+%u", sz);
       std::string sv = "_" + my_random_attr(width+4) + nbuf;
-      jv = Json::Value(sv);
-      DEBUG("nice string jv=" << jv);
-      if (do_random_action(actionvect,jv))
+      Json::Value jstr(sv);
+      DEBUG("nice string jstr=" << jstr);
+      if (tds.do_random(jstr))
         sz--;
     }
     break;
@@ -203,35 +272,30 @@ my_random_json(unsigned sz, unsigned width)
     case 4:
     case 5:
     {
-      jv = Json::Value(Json::objectValue);
-      jv["@num"] = Json::Value (Json::Int64(-((long)sz+1)));
-      DEBUG("object jv=" << jv);
-      std::list<std::pair<unsigned,action_t>> actlist;
+      Json::Value jnewob(Json::objectValue);
+      jnewob["@num"] = Json::Value (Json::Int64(-((long)sz+1)));
+      DEBUG("object jnewob=" << jnewob);
+      std::list<ToDo> todolist;
       for (unsigned cnt = width/2 + 1 + my_random() % (width/4+1);
            cnt > 0;
            cnt--) {
         auto at = my_random_attr(4*width/3+1);
-        jv[at] = Json::Value::null;
-        actlist.push_back( {my_random() % width,
-                            [=,&jv](const Json::Value& jcomp)
-        { if (jv[at].isNull())
+        jnewob[at] = Json::Value::null;
+        ToDo td(&jnewob,[=](Json::Value&job, const Json::Value&jcomp)
+        { if (job[at].isNull())
           {
-            jv[at]=jcomp;
-            DEBUG("objaction at=" << at << "; jv=" << jv);
+            job[at]=jcomp;
+            DEBUG("objaction at=" << at << "; job=" << job);
             return true;
           }
           else return false;
-        }
-                           });
+        });
+        todolist.push_back(td);
       }
-      if (do_random_action(actionvect,jv))
+      if (tds.do_random(jnewob))
         sz--;
-      for (auto pr : actlist)
-      {
-        unsigned ix = pr.first;
-        action_t act = pr.second;
-        actionvect[ix] = act;
-      };
+      for (auto td : todolist)
+        tds.add_todo(td);
     }
     break;
     // quite often, an array
@@ -241,40 +305,39 @@ my_random_json(unsigned sz, unsigned width)
       char buf [32];
       memset (buf, 0, sizeof(buf));
       snprintf(buf, sizeof(buf), "_%d_", sz);
-      jv = Json::Value(Json::arrayValue);
-      jv.append(Json::Value(buf));
-      DEBUG("array jv=" << jv);
-      std::list<std::pair<unsigned,action_t>> actlist;
+      Json::Value jnewarr(Json::arrayValue);
+      jnewarr.append(Json::Value(buf));
+      DEBUG("array jnewarr=" << jnewarr);
+      std::list<ToDo> todolist;
       for (unsigned cnt = width/2 + 1 + my_random() % (width/4+1);
            cnt > 0;
            cnt--) {
-        actlist.push_back( {my_random() % width,
-                            [=,&jv](const Json::Value& jcomp)
+        ToDo td(&jnewarr,[=](Json::Value&jarr, const Json::Value&jcomp)
         {
-          jv.append(jcomp);
-          DEBUG("array action jv=" << jv);
+          jarr.append(jcomp);
+          DEBUG("array action jarr=" << jarr);
           return true;
         }
-                           });
+               );
+        todolist.push_back(td);
       }
-      if (do_random_action(actionvect,jv))
+      if (tds.do_random(jnewarr))
         sz--;
-      for (auto pr : actlist)
-      {
-        unsigned ix = pr.first;
-        action_t act = pr.second;
-        actionvect[ix] = act;
-      };
+      for (auto td : todolist)
+        tds.add_todo(td);
     }
     break;
     // perhaps a boolean or a null
     case 8:
+    {
+      Json::Value jatom;
       if (my_random() % 2)
-        jv = Json::Value((bool) (my_random() % 2));
-      DEBUG("atomic jv=" << jv);
-      if (do_random_action(actionvect,jv))
+        jatom = Json::Value((bool) (my_random() % 2));
+      DEBUG("atomic jatom=" << jatom);
+      if (tds.do_random(jatom))
         sz--;
-      break;
+    }
+    break;
     }
   }
   return jroot;
